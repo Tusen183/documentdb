@@ -24,7 +24,9 @@ function GetPostgresPath()
   local pgVersion=$1
   local osVersion=$(cat /etc/os-release | grep "^ID=");
 
-  if [[ "$osVersion" == "ID=ubuntu" || "$osVersion" == "ID=debian"|| "$osVersion" == "ID=mariner" || "$osVersion" == "ID=azurelinux" ]]; then
+  if command -v pg_config >/dev/null 2>&1; then
+    pg_config --bindir
+  elif [[ "$osVersion" == "ID=ubuntu" || "$osVersion" == "ID=debian" || "$osVersion" == "ID=mariner" || "$osVersion" == "ID=azurelinux" ]]; then
     echo "/usr/lib/postgresql/$pgVersion/bin"
   else
     echo "/usr/pgsql-$pgVersion/bin"

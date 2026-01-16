@@ -15,22 +15,22 @@ PACKAGEDIR=""
 profile=""
 
 while getopts "d:v:ichp:r:" opt; do
-  case $opt in
-    d) SOURCEDIR="$OPTARG"
-    ;;
-    v) PGVERSION="$OPTARG"
-    ;;
-    i) INSTALL="True"
-    ;;
-    c) CLEAN="True"
-    ;;
-    h) help="true"
-    ;;
-    p) PACKAGEDIR="$OPTARG"
-    ;;
-    r) profile="$OPTARG"
-    ;;
-  esac
+    case $opt in
+        d) SOURCEDIR="$OPTARG"
+        ;;
+        v) PGVERSION="$OPTARG"
+        ;;
+        i) INSTALL="True"
+        ;;
+        c) CLEAN="True"
+        ;;
+        h) help="true"
+        ;;
+        p) PACKAGEDIR="$OPTARG"
+        ;;
+        r) profile="$OPTARG"
+        ;;
+    esac
 
   # Assume empty string if it's unset since we cannot reference to
   # an unset variabled due to "set -u".
