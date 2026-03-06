@@ -304,9 +304,6 @@ typedef signed char RumNullCategory;
 #define RUM_CAT_NULL_ITEM 3             /* placeholder for null item */
 #define RUM_CAT_EMPTY_QUERY (-1)        /* placeholder for full-scan query */
 
-/* (Custom documentdb): This is net new from base RUM for ordering */
-#define RUM_CAT_ORDER_ITEM 4
-
 /*
  * searchMode settings for extractQueryFn.
  */
@@ -314,6 +311,8 @@ typedef signed char RumNullCategory;
 #define GIN_SEARCH_MODE_INCLUDE_EMPTY 1
 #define GIN_SEARCH_MODE_ALL 2
 #define GIN_SEARCH_MODE_EVERYTHING 3        /* for internal use only */
+#define RUM_SEARCH_MODE_ORDERED 4
+#define RUM_SEARCH_MODE_ORDERED_REVERSE 5
 
 /*
  * Access macros for null category byte in entry tuples
@@ -557,6 +556,9 @@ extern void rumUpdateStats(Relation index, const RumStatsData *stats,
 						   bool isBuild);
 
 /* ruminsert.c */
+extern BlockNumber rumCreatePostingTree(RumState *rumstate, OffsetNumber attnum,
+										Relation index, RumItem *items,
+										uint32 nitems);
 extern IndexBuildResult * rumbuild(Relation heap, Relation index,
 								   struct IndexInfo *indexInfo);
 extern void rumbuildempty(Relation index);
@@ -1083,7 +1085,6 @@ extern PGDLLIMPORT int RumFuzzySearchLimit;
 extern PGDLLIMPORT int RumDataPageIntermediateSplitSize;
 extern PGDLLIMPORT bool RumThrowErrorOnInvalidDataPage;
 extern PGDLLIMPORT bool RumDisableFastScan;
-extern PGDLLIMPORT bool RumEnableParallelIndexBuild;
 extern PGDLLIMPORT int RumParallelIndexWorkersOverride;
 extern PGDLLIMPORT bool RumSkipRetryOnDeletePage;
 extern PGDLLIMPORT bool RumForceOrderedIndexScan;
@@ -1101,6 +1102,7 @@ extern PGDLLIMPORT bool RumNewBulkDeleteInlineDataPages;
 extern PGDLLIMPORT bool RumVacuumSkipPrunePostingTreePages;
 extern PGDLLIMPORT bool RumEnableSupportDeadIndexItems;
 extern PGDLLIMPORT bool RumSkipResetOnDeadEntryPage;
+extern PGDLLIMPORT bool RumEnableOrderedOperatorScans;
 
 /*
  * Functions for reading ItemPointers with additional information. Used in

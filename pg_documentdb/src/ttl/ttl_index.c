@@ -15,6 +15,7 @@
 #include <executor/spi.h>
 #include <portability/instr_time.h>
 
+#include "api_hooks.h"
 #include "io/bson_core.h"
 #include "metadata/collection.h"
 #include "query/bson_compare.h"
@@ -40,10 +41,8 @@ extern bool EnableTtlJobsOnReadOnly;
 extern bool UseIndexHintsForTTLTask;
 extern bool EnableTTLDescSort;
 extern bool EnableIndexOrderbyPushdown;
-extern double TTLDeleteSaturationThreshold;
-extern int TTLSlowBatchDeleteThresholdInMS;
-extern bool EnableSelectiveTTLLogging;
 extern bool EnableTTLBatchObservability;
+
 extern bool TTLSkipCaughtUpIndexes;
 
 bool UseV2TTLIndexPurger = true;
@@ -86,6 +85,7 @@ typedef struct TtlIndexEntry
 	char *indexName;
 } TtlIndexEntry;
 
+
 /* --------------------------------------------------------- */
 /* Forward declaration */
 /* --------------------------------------------------------- */
@@ -93,7 +93,8 @@ typedef struct TtlIndexEntry
 static uint64 DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry,
 											int64 currentTime, int32 batchSize, instr_time
 											startTime, int budget,
-											bool *IsTaskTimeBudgetExceeded);
+											bool *IsTaskTimeBudgetExceeded,
+											void *ttlMetricsContext);
 static bool IsTaskTimeBudgetExceeded(instr_time startTime, double *elapsedTime, int
 									 budget);
 
@@ -168,10 +169,12 @@ delete_expired_rows_for_index(PG_FUNCTION_ARGS)
 	instr_time startTime;
 	INSTR_TIME_SET_CURRENT(startTime);
 	bool isTimeBudgetExceeded = false;
+	void *ttlMetricsContextLegacyUnused = NULL;
 	uint64 rowsCount = DeleteExpiredRowsForIndexCore(tableName, &indexEntry, currentTime,
 													 ttlDeleteBatchSize, startTime,
 													 SingleTTLTaskTimeBudget,
-													 &isTimeBudgetExceeded);
+													 &isTimeBudgetExceeded,
+													 ttlMetricsContextLegacyUnused);
 
 	PG_RETURN_INT64((int64) rowsCount);
 }
@@ -379,6 +382,10 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 	int timeBudget = RepeatPurgeIndexesForTTLTask ? TTLTaskMaxRunTimeInMS :
 					 SingleTTLTaskTimeBudget;
 
+	/* Create TTL metrics context via hook if available */
+	void *ttlMetricsContext = CreateTtlMetricsContext(priorMemoryContext,
+													  list_length(ttlIndexEntries));
+
 	while (!IsTaskTimeBudgetExceeded(startTime, NULL, timeBudget))
 	{
 		rowsDeletedInCurrentLoop = 0;
@@ -505,7 +512,8 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 					uint64 deletedRows =
 						DeleteExpiredRowsForIndexCore(
 							tableName, ttlIndexEntry, epochMilliseconds,
-							batchSize, startTime, timeBudget, &isTimeBudgetExceeded);
+							batchSize, startTime, timeBudget, &isTimeBudgetExceeded,
+							ttlMetricsContext);
 					if (isTimeBudgetExceeded)
 					{
 						/* If exceeded time, mark as should stop but still commit this deletion. */
@@ -589,6 +597,13 @@ delete_expired_rows(PG_FUNCTION_ARGS)
 	}
 
 end:
+
+	/* Finalize and emit TTL metrics via the hook */
+	if (ttlMetricsContext != NULL)
+	{
+		FinalizeTtlMetrics(ttlMetricsContext);
+	}
+
 	oldContext = MemoryContextSwitchTo(priorMemoryContext);
 	list_free_deep(ttlIndexEntries);
 
@@ -651,11 +666,13 @@ IsTaskTimeBudgetExceeded(instr_time startTime, double *elapsedTime, int budget)
 
 
 /* Deletes the rows that have expired for the given table name and ttl entry information.
- * It deletes the number of items specified on the batchSize that have expired based on the index entry expiry value. */
+ * It deletes the number of items specified on the batchSize that have expired based on the index entry expiry value.
+ * If ttlMetricsContext is not NULL, records metrics via the RecordTtlMetric hook. */
 static uint64
 DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry, int64
 							  currentTime, int32 batchSize, instr_time startTime, int
-							  budget, bool *isTaskTimeBudgetExceeded)
+							  budget, bool *isTaskTimeBudgetExceeded,
+							  void *ttlMetricsContext)
 {
 	int32 ttlDeleteBatchSize = (batchSize != -1) ? batchSize :
 							   MaxTTLDeleteBatchSize;
@@ -803,9 +820,6 @@ DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry, int64
 	double saturationRatio = 0.0;
 	double batchDeleteElapsedTime = 0.0;
 
-	/* selectiveLogging determines if also emit a log entry in addition to feature counters */
-	bool logFeatureCounterEvent = false;
-
 	if (IsTaskTimeBudgetExceeded(startTime, &batchDeleteElapsedTime, budget))
 	{
 		*isTaskTimeBudgetExceeded = true;
@@ -828,68 +842,54 @@ DeleteExpiredRowsForIndexCore(char *tableName, TtlIndexEntry *indexEntry, int64
 		 */
 		saturationRatio = (ttlDeleteBatchSize > 0) ?
 						  (double) rowsCount / ttlDeleteBatchSize : 0;
+	}
 
-
-		/*
-		 *  We emit a `ttl_saturated_batches` feature counter if the saturation ratio is
-		 *  > 0.9 (default threshold).
-		 */
-		if (saturationRatio >= TTLDeleteSaturationThreshold)
+	/* Compute shardId for metrics and logging */
+	uint64 shardId = indexEntry->shardId;
+	if (shardId == 0 && strncmp(tableName, "documents_", 10) == 0)
+	{
+		/* Compute the shardId from the table if applicable */
+		char *numEndPointer = NULL;
+		uint64 parsedCollectionId = strtoull(&tableName[10], &numEndPointer, 10);
+		if (parsedCollectionId == indexEntry->collectionId &&
+			numEndPointer != NULL && numEndPointer[0] == '_' &&
+			numEndPointer[1] != '\0')
 		{
-			ReportFeatureUsage(FEATURE_USAGE_TTL_SATURATED_BATCHES);
-			logFeatureCounterEvent = EnableSelectiveTTLLogging;
-		}
-
-		/*
-		 *  We emit a `ttl_slow_batches` feature counter if the a TTL delete query on a shard
-		 *  has timed out or taken more than 10 seconds (default threshold).
-		 */
-		if (*isTaskTimeBudgetExceeded ||
-			batchDeleteElapsedTime >= TTLSlowBatchDeleteThresholdInMS)
-		{
-			ReportFeatureUsage(FEATURE_USAGE_TTL_SLOW_BATCHES);
-			logFeatureCounterEvent = EnableSelectiveTTLLogging;
+			shardId = strtoull(&numEndPointer[1], &numEndPointer, 10);
 		}
 	}
 
-	if (*isTaskTimeBudgetExceeded || logFeatureCounterEvent || LogTTLProgressActivity)
+	if (*isTaskTimeBudgetExceeded || LogTTLProgressActivity)
 	{
-		uint64 shardId = indexEntry->shardId;
-		if (shardId == 0 && strncmp(tableName, "documents_", 10) == 0)
-		{
-			/* Compute the shardId from the table if applicable */
-			char *numEndPointer = NULL;
-			uint64 parsedCollectionId = strtoull(&tableName[10], &numEndPointer, 10);
-			if (parsedCollectionId == indexEntry->collectionId &&
-				numEndPointer != NULL && numEndPointer[0] == '_' &&
-				numEndPointer[1] != '\0')
-			{
-				shardId = strtoull(&numEndPointer[1], &numEndPointer, 10);
-			}
-		}
-
 		elog_unredacted(
 			"Number of rows deleted: %ld, collectionId = %lu, shardId=%lu, index_id=%lu, "
 			"batch_size=%d, expiry_cutoff=%ld, "
-			"LogTTLProgressActivity=%d,TTLSlowBatchDeleteThresholdInMS=%d, TTLDeleteSaturationThreshold=%.2f, "
-			"has_pfe=%d, isTaskTimeBudgetExceeded=%d, logFeatureCounterEvent=%d, "
+			"LogTTLProgressActivity=%d, "
+			"has_pfe=%d, isTaskTimeBudgetExceeded=%d, "
 			"duration= %.2f, saturation_ratio=%.2f, "
 			"statement_timeout=%d, lock_timeout=%d, used_hints=%d, "
 			"index_is_ordered=%d, use_desc_sort=%d",
 			(int64) rowsCount, indexEntry->collectionId,
 			shardId, indexEntry->indexId, ttlDeleteBatchSize,
 			currentTime - indexExpiryMilliseconds, LogTTLProgressActivity,
-			TTLSlowBatchDeleteThresholdInMS, TTLDeleteSaturationThreshold,
-			indexPfe != NULL, *isTaskTimeBudgetExceeded, logFeatureCounterEvent,
+			indexPfe != NULL, *isTaskTimeBudgetExceeded,
 			batchDeleteElapsedTime, saturationRatio,
 			TTLPurgerStatementTimeout, TTLPurgerLockTimeout,
 			useIndexHintsForTTLQuery,
 			indexEntry->indexIsOrdered, useDescendingSort);
 	}
 
-	if (rowsCount > 0)
+	/* Record TTL metric via the hook if metrics context is provided */
+	if (ttlMetricsContext != NULL)
 	{
-		ReportFeatureUsage(FEATURE_USAGE_TTL_PURGER_CALLS);
+		RecordTtlMetric(ttlMetricsContext,
+						indexEntry->collectionId,
+						indexEntry->indexId,
+						shardId,
+						indexEntry->indexName,
+						saturationRatio,
+						batchDeleteElapsedTime,
+						rowsCount);
 	}
 
 	return rowsCount;

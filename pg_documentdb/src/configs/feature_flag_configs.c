@@ -123,6 +123,9 @@ bool RumUseNewCompositeTermGeneration = DEFAULT_RUM_USE_NEW_COMPOSITE_TERM_GENER
 #define DEFAULT_ENABLE_COMPOSITE_WILDCARD_INDEX true
 bool EnableCompositeWildcardIndex = DEFAULT_ENABLE_COMPOSITE_WILDCARD_INDEX;
 
+#define DEFAULT_CREATE_TTL_INDEX_AS_COMPOSITE true
+bool CreateTTLIndexAsCompositeByDefault = DEFAULT_CREATE_TTL_INDEX_AS_COMPOSITE;
+
 #define DEFAULT_ENABLE_REDUCED_CORRELATED_TERMS false
 bool EnableCompositeReducedCorrelatedTerms = DEFAULT_ENABLE_REDUCED_CORRELATED_TERMS;
 
@@ -175,6 +178,10 @@ bool EnableNewCountAggregates = DEFAULT_ENABLE_NEW_COUNT_AGGREGATES;
 #define DEFAULT_ENABLE_EXTENDED_EXPLAIN_ON_ANALYZEOFF true
 bool EnableExtendedExplainOnAnalyzeOff = DEFAULT_ENABLE_EXTENDED_EXPLAIN_ON_ANALYZEOFF;
 
+/* Remove after v113 */
+#define DEFAULT_ENABLE_NEW_MIN_MAX_ACCUMULATORS false
+bool EnableNewMinMaxAccumulators = DEFAULT_ENABLE_NEW_MIN_MAX_ACCUMULATORS;
+
 
 /*
  * SECTION: Aggregation & Query feature flags
@@ -225,6 +232,11 @@ bool EnableUseForeignKeyLookupInline = DEFAULT_USE_FOREIGN_KEY_LOOKUP_INLINE;
 /* Remove after 111 */
 #define DEFAULT_ENABLE_ADD_TO_SET_AGGREGATION_REWRITE true
 bool EnableAddToSetAggregationRewrite = DEFAULT_ENABLE_ADD_TO_SET_AGGREGATION_REWRITE;
+
+/* Remove after 112*/
+#define DEFAULT_ENABLE_ID_INDEX_PUSHDOWN_FOR_QUERY_OP true
+bool EnableIdIndexPushdownForQueryOp =
+	DEFAULT_ENABLE_ID_INDEX_PUSHDOWN_FOR_QUERY_OP;
 
 /*
  * SECTION: Let support feature flags
@@ -793,6 +805,14 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 		PGC_USERSET, 0, NULL, NULL, NULL);
 
 	DefineCustomBoolVariable(
+		psprintf("%s.enableIdIndexPushdownForQueryOp", newGucPrefix),
+		gettext_noop(
+			"Whether to enable index push down for _id index."),
+		NULL, &EnableIdIndexPushdownForQueryOp,
+		DEFAULT_ENABLE_ID_INDEX_PUSHDOWN_FOR_QUERY_OP,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
 		psprintf("%s.enableUseForeignKeyLookupInline", newGucPrefix),
 		gettext_noop(
 			"Whether to use foreign key for lookup inline method."),
@@ -838,5 +858,21 @@ InitializeFeatureFlagConfigurations(const char *prefix, const char *newGucPrefix
 			"Whether to enable skipping bitmap records by tid without loading the heap to find the continuation point."),
 		NULL, &EnableContinuationFastBitmapLookup,
 		DEFAULT_ENABLE_CONTINUATION_FAST_BITMAP_LOOKUP,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.createTTLIndexAsCompositeByDefault", newGucPrefix),
+		gettext_noop(
+			"Whether to always create TTL indexes as composite indexes by default."),
+		NULL, &CreateTTLIndexAsCompositeByDefault,
+		DEFAULT_CREATE_TTL_INDEX_AS_COMPOSITE,
+		PGC_USERSET, 0, NULL, NULL, NULL);
+
+	DefineCustomBoolVariable(
+		psprintf("%s.enableNewMinMaxAccumulators", newGucPrefix),
+		gettext_noop(
+			"Whether to enable new min and max aggregate optimizations."),
+		NULL, &EnableNewMinMaxAccumulators,
+		DEFAULT_ENABLE_NEW_MIN_MAX_ACCUMULATORS,
 		PGC_USERSET, 0, NULL, NULL, NULL);
 }
