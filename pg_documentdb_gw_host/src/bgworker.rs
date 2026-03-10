@@ -14,7 +14,11 @@ use documentdb_gateway_core::{
     startup::{create_postgres_object, get_service_context},
 };
 
-use crate::gucs::{PG_DOCUMENTDB_GATEWAY_DATABASE, PG_DOCUMENTDB_SETUP_CONFIGURATION};
+use crate::gucs::{
+    PG_DOCUMENTDB_GATEWAY_DATABASE,
+    PG_DOCUMENTDB_SETUP_CONFIGURATION,
+    PG_DOCUMENTDB_GATEWAY_LOG_LEVEL,
+};
 
 pub fn init() {
     BackgroundWorkerBuilder::new("DocumentDB Gateway Host")
@@ -46,6 +50,13 @@ pub extern "C-unwind" fn documentdb_gw_worker_main(_arg: pg_sys::Datum) {
             .to_str()
             .unwrap(),
     );
+
+    // Get log level from GUC before entering async runtime
+    let log_level = PG_DOCUMENTDB_GATEWAY_LOG_LEVEL
+        .get()
+        .and_then(|s| s.to_str().ok().map(|s| s.to_string()))
+        .unwrap_or_else(|| "info".to_string());
+
     BackgroundWorker::connect_worker_to_spi(Some(database_name.as_str()), None);
 
     let shutdown_token = SHUTDOWN_CONTROLLER.token();
@@ -59,7 +70,7 @@ pub extern "C-unwind" fn documentdb_gw_worker_main(_arg: pg_sys::Datum) {
         .unwrap();
 
     tokio_runtime.spawn(async move {
-        run_docdb_gateway(setup_configuration_file.as_str()).await;
+        run_docdb_gateway(setup_configuration_file.as_str(), log_level).await;
         SHUTDOWN_CONTROLLER.shutdown();
     });
 
@@ -75,7 +86,7 @@ pub extern "C-unwind" fn documentdb_gw_worker_main(_arg: pg_sys::Datum) {
     log!("{} stopped", worker_name);
 }
 
-async fn run_docdb_gateway(setup_configuration_file: &str) {
+async fn run_docdb_gateway(setup_configuration_file: &str, log_level: String) {
     let cfg_file = std::path::PathBuf::from(setup_configuration_file);
 
     let shutdown_token = SHUTDOWN_CONTROLLER.token();
@@ -104,6 +115,57 @@ async fn run_docdb_gateway(setup_configuration_file: &str) {
         Box::new(setup_configuration.clone()),
     )
     .await;
+    // Initialize tracing subscriber to write gateway logs to a separate file
+    // Use log level passed from main thread (already retrieved from GUC)
+    let env_filter = EnvFilter::try_from_default_env()
+        .unwrap_or_else(|_| EnvFilter::new(&log_level));
+
+    // Use PGDATA/log directory for gateway logs
+    let pgdata = std::env::var("PGDATA").unwrap_or_else(|_| "/tmp".to_string());
+    let log_dir_path = std::path::PathBuf::from(&pgdata).join("log");
+
+    // Ensure log directory exists
+    if let Err(e) = std::fs::create_dir_all(&log_dir_path) {
+        eprintln!("Warning: Failed to create log directory {:?}: {}", log_dir_path, e);
+
+    }
+
+    let log_file_path = log_dir_path.join("gateway.log");
+
+    // Create file appender that writes to $PGDATA/log/gateway.log
+    let file = std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(&log_file_path)
+        .expect("Failed to open gateway log file");
+
+    tracing_subscriber::registry()
+        .with(env_filter)
+        .with(
+            tracing_subscriber::fmt::layer()
+                .with_writer(std::sync::Mutex::new(file))
+                .with_ansi(false)
+                .with_target(true)
+                .with_thread_ids(true)
+        )
+        .init();
+
+    tracing::info!("Gateway logs writing to: {:?}", log_file_path);
+    tracing::info!("Gateway log level: {}", log_level);
+    tracing::info!("Starting server with configuration: {setup_configuration:?}");
+
+    let query_catalog = create_query_catalog();
+
+    let system_requests_pool = Arc::new(
+        get_system_connection_pool(
+            &setup_configuration,
+            &query_catalog,
+            "SystemRequests",
+            SYSTEM_REQUESTS_MAX_CONNECTIONS,
+        )
+        .await,
+    );
+    tracing::info!("System requests pool initialized");
 
     let dynamic_configuration = create_postgres_object(
         || async {

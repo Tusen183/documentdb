@@ -11,8 +11,18 @@ use tokio_postgres::types::private::BytesMut;
 use tokio_postgres::types::{to_sql_checked, FromSql, ToSql, Type};
 
 /// Provides ability to bind Raw bson in and out of postgres
-#[derive(Debug)]
 pub struct PgDocument<'a>(pub &'a RawDocument);
+
+// Custom Debug implementation to show readable JSON instead of hex
+impl std::fmt::Debug for PgDocument<'_> {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        // Try to parse and display as JSON, fallback to raw format
+        match bson::from_slice::<bson::Document>(self.0.as_bytes()) {
+            Ok(doc) => write!(f, "PgDocument({})", doc),
+            Err(_) => write!(f, "PgDocument({:?})", self.0),
+        }
+    }
+}
 
 // To support multi coordinator scenarios, bind the raw bson into a bytea rather than bson
 impl ToSql for PgDocument<'_> {

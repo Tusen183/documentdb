@@ -184,12 +184,35 @@ fn parse_cmd<'a>(command: &'a RawDocument, extra: Option<&'a [u8]>) -> Result<Re
     if let Some(result) = command.into_iter().next() {
         let cmd_name = result?.0;
 
+        // Debug: 打印收到的命令
+        // Skip logging for noisy heartbeat commands at trace level
+        let is_heartbeat = cmd_name == "ismaster" || cmd_name == "isMaster" || cmd_name == "hello";
+
+        if !is_heartbeat {
+            tracing::debug!("Received MongoDB command: {}", cmd_name);
+        }
+
+        // Convert RawDocument to readable JSON format for trace logging
+        if tracing::enabled!(tracing::Level::TRACE) && !is_heartbeat {
+            match bson::from_slice::<bson::Document>(command.as_bytes()) {
+                Ok(doc) => {
+                    tracing::trace!("Command document: {}", doc);
+                }
+                Err(e) => {
+                    tracing::trace!("Command document (parse error: {}): {:?}", e, command);
+                }
+            }
+        }
+
         let explain = command.get_bool("explain").unwrap_or(false);
         if explain {
             return Ok(Request::Raw(RequestType::Explain, command, extra));
         }
 
         let request_type = RequestType::from_str(cmd_name)?;
+        if !is_heartbeat {
+            tracing::debug!("Parsed request type: {:?}", request_type);
+        }
         Ok(Request::Raw(request_type, command, extra))
     } else {
         Err(DocumentDBError::bad_value(
