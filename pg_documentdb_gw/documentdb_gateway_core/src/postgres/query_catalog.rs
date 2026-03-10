@@ -559,7 +559,7 @@ pub fn create_query_catalog() -> QueryCatalog {
                              GRANT documentdb_admin_role TO {user} WITH ADMIN OPTION".to_string(),
 
             // version.rs
-            extension_versions: "SELECT documentdb_core.bson_build_document('internal', ARRAY[ (SELECT extversion FROM pg_extension WHERE extname = 'documentdb' LIMIT 1), documentdb_api.binary_version() ])".to_string(),
+            extension_versions: "SELECT documentdb_core.bson_build_document('internal'::text, ARRAY[ (SELECT extversion FROM pg_extension WHERE extname = 'documentdb' LIMIT 1), documentdb_api.binary_version() ])".to_string(),
 
             // scan_types
             scan_types: vec![
