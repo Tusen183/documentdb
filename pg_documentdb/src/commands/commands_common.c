@@ -98,6 +98,7 @@ static int NumberOfIgnoredFields = sizeof(IgnoredCommonSpecFields) / sizeof(char
 static int CompareStringsCaseInsensitive(const void *a, const void *b);
 static pgbson * RewriteDocumentAddObjectIdCore(const bson_value_t *docValue,
 											   bson_value_t *objectIdToWrite);
+static pgbson * RewriteDocumentZeroTimestampCore(const bson_value_t *docValue);
 
 /*
  * FindShardKeyValueForDocumentId queries the collection for the shard key value that
@@ -543,7 +544,6 @@ RewriteDocumentAddObjectId(pgbson *document)
 	return result;
 }
 
-
 /*
  * This function closely resembles `RewriteDocumentValueAddObjectId`
  * Additionally accepts an object ID as input, allowing it to insert the same object ID into the document if it is absent.
@@ -566,7 +566,6 @@ RewriteDocumentWithCustomObjectId(pgbson *document,
 
 	return result;
 }
-
 
 /*
  * For write procedures, commits and re-acquires the collection lock.
@@ -628,6 +627,7 @@ RewriteDocumentAddObjectIdCore(const bson_value_t *docValue,
 	while (bson_iter_next(&it))
 	{
 		StringView pathView = bson_iter_key_string_view(&it);
+		
 		if (StringViewEquals(&pathView, &IdFieldStringView))
 		{
 			/* Found an _id already */
@@ -690,5 +690,99 @@ RewriteDocumentAddObjectIdCore(const bson_value_t *docValue,
 								docValue->value.v_doc.data_len);
 	}
 
+	return PgbsonWriterGetPgbson(&writer);
+}
+
+static inline bool
+IsTimestampZero(const bson_value_t *value)
+{
+	return value != NULL &&
+		   value->value_type == BSON_TYPE_TIMESTAMP &&
+		   value->value.v_timestamp.timestamp == 0 &&
+		   value->value.v_timestamp.increment == 0;
+}
+static uint32_t
+getCurrTime()
+{
+	struct timespec spec;
+	clock_gettime(CLOCK_REALTIME, &spec);
+	uint32_t currentUnixTime = (uint32_t)(spec.tv_sec + 1);
+	return currentUnixTime;
+}
+
+pgbson *
+RewriteDocumentValueZeroTimestamp(const bson_value_t *docValue)
+{
+	pgbson *doc = RewriteDocumentZeroTimestampCore(docValue);
+	if (doc == NULL)
+	{
+		return PgbsonInitFromDocumentBsonValue(docValue);
+	}
+	return doc;
+}
+
+pgbson *
+RewriteDocumentZeroTimestamp(pgbson *document)
+{
+	bson_value_t value = ConvertPgbsonToBsonValue(document);
+	pgbson *doc = RewriteDocumentZeroTimestampCore(&value);
+	if (doc == NULL)
+	{
+		return document;
+	}
+	return doc;
+}
+
+
+static pgbson *
+RewriteDocumentZeroTimestampCore(const bson_value_t *docValue)
+{
+	bool hasTimestampToFix = false;
+
+	bson_iter_t it;
+	pgbson_writer writer;	
+	BsonValueInitIterator(docValue, &it);
+	PgbsonWriterInit(&writer);
+	while (bson_iter_next(&it))
+	{
+		const bson_value_t *value = bson_iter_value(&it);
+		if (IsTimestampZero(value))
+		{
+			hasTimestampToFix = true;
+		}
+	}
+
+	if (!hasTimestampToFix)
+	{
+		return NULL;
+	}
+
+	bson_iter_t documentIterator;
+	const bson_value_t *value;
+	BsonValueInitIterator(docValue, &documentIterator);
+	while (bson_iter_next(&documentIterator))
+	{
+		const char *bsonKey = bson_iter_key(&documentIterator);
+		int bsonKeyLen = bson_iter_key_len(&documentIterator);
+		value = bson_iter_value(&documentIterator);
+		/* Rewrite zero timestamp to have increment of 1 
+		to avoid issues with some MongoDB drivers 
+		that do not support zero timestamps */
+		if(IsTimestampZero(value))
+		{
+			uint32_t currentUnixTime = getCurrTime();
+			bson_value_t zeroTimestamp = {
+				.value_type = BSON_TYPE_TIMESTAMP,
+				.value.v_timestamp.timestamp = currentUnixTime,
+				.value.v_timestamp.increment = 1
+			};
+			PgbsonWriterAppendValue(&writer, bsonKey, bsonKeyLen, &zeroTimestamp);
+		}
+		else
+		{
+			PgbsonWriterAppendValue(&writer, bsonKey, bsonKeyLen, value);
+		}
+	}
+	
 	return PgbsonWriterGetPgbson(&writer);
 }

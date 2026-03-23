@@ -91,6 +91,8 @@ pgbson * RewriteDocumentAddObjectId(pgbson *document);
 pgbson * RewriteDocumentValueAddObjectId(const bson_value_t *value);
 pgbson * RewriteDocumentWithCustomObjectId(pgbson *document,
 										   pgbson *objectIdToWrite);
+pgbson * RewriteDocumentValueZeroTimestamp(const bson_value_t *docValue);
+pgbson * RewriteDocumentZeroTimestamp(pgbson *document);
 
 void ValidateIdField(const bson_value_t *idValue);
 void SetExplicitStatementTimeout(int timeoutMilliseconds);

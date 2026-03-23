@@ -24,6 +24,7 @@
 #include <utils/lsyscache.h>
 
 #include "access/xact.h"
+#include "executor/executor.h"
 #include "executor/spi.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
@@ -164,6 +165,7 @@ static inline RangeTblEntry * CreateBaseTableRteForInsert(MongoCollection *colle
 														  shardOid,
 														  List **optionalPermInfos);
 static inline void ReportInsertFeatureUsage(int batchSize);
+
 
 /*
  * ApiGucPrefix.enable_create_collection_on_insert GUC determines whether
@@ -1496,11 +1498,13 @@ PreprocessInsertionDoc(const bson_value_t *docValue, MongoCollection *collection
 	{
 		ValidateSchemaOnDocumentInsert(
 			evalState, docValue, FAILED_VALIDATION_ERROR_MSG);
-	}
-
+	
+		}
 	/* make sure the document has an _id and it is in the right place */
 	pgbson *insertDoc = RewriteDocumentValueAddObjectId(docValue);
 
+	insertDoc = RewriteDocumentZeroTimestamp(insertDoc);
+	
 	PgbsonValidateInputBson(insertDoc, BSON_VALIDATE_NONE);
 
 	/*
