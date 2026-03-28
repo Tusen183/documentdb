@@ -94,14 +94,6 @@ async fn run_docdb_gateway(setup_configuration_file: &str, log_level: String) {
     let setup_configuration =
         DocumentDBSetupConfiguration::new(&cfg_file).expect("Failed to load configuration.");
 
-    // Initialize tracing subscriber to handle all tracing events
-    tracing_subscriber::registry()
-        .with(EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")))
-        .with(tracing_subscriber::fmt::layer())
-        .init();
-
-    tracing::info!("Starting server with configuration: {setup_configuration:?}");
-
     let tls_provider = TlsProvider::new(
         SetupConfiguration::certificate_options(&setup_configuration),
         None,
@@ -153,19 +145,6 @@ async fn run_docdb_gateway(setup_configuration_file: &str, log_level: String) {
     tracing::info!("Gateway logs writing to: {:?}", log_file_path);
     tracing::info!("Gateway log level: {}", log_level);
     tracing::info!("Starting server with configuration: {setup_configuration:?}");
-
-    let query_catalog = create_query_catalog();
-
-    let system_requests_pool = Arc::new(
-        get_system_connection_pool(
-            &setup_configuration,
-            &query_catalog,
-            "SystemRequests",
-            SYSTEM_REQUESTS_MAX_CONNECTIONS,
-        )
-        .await,
-    );
-    tracing::info!("System requests pool initialized");
 
     let dynamic_configuration = create_postgres_object(
         || async {
