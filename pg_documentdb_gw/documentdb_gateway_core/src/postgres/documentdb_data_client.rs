@@ -782,31 +782,22 @@ impl PgDataClient for DocumentDBDataClient {
         request_context: &RequestContext<'_>,
         connection_context: &ConnectionContext,
     ) -> Result<Response> {
-        // TODO: Handle the case where !nameOnly - the legacy gateway simply returns 0s in the appropriate format
-        let filter = request_context
-            .payload()
-            .document()
-            .get_document("filter")
-            .ok();
-        let filter_string = filter.map_or("", |_| "WHERE document @@ $1");
-
-        let list_db_query = self
+        let (request, request_info, request_tracker) = request_context.get_components();
+        let connection = self.pull_connection(connection_context).await?;
+        let list_db_query = connection_context
             .service_context
             .query_catalog()
-            .list_databases(filter_string);
-        let list_db_query_str = list_db_query.as_str();
+            .list_databases("");
 
-        let run_list_dbs = |conn: Arc<Connection>| async move {
-            let rows = match filter {
-                None => conn.query(list_db_query_str, &[], &[]).await,
-                Some(filter) => {
-                    conn.query(list_db_query_str, &[Type::BYTEA], &[&PgDocument(filter)])
-                        .await
-                }
-            }?;
-
-            Ok(Response::Pg(PgResponse::new(rows)))
-        };
+        let list_database_rows = connection
+            .query(
+                &list_db_query,
+                &[Type::BYTEA],
+                &[&PgDocument(request.document())],
+                Timeout::transaction(request_info.max_time_ms),
+                request_tracker,
+            )
+            .await?;
 
         self.run_query(
             request_context,
