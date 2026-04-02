@@ -1,6 +1,6 @@
 SET search_path TO documentdb_core, documentdb_api, public;
-SET documentdb.next_collection_id TO 9200;
-SET documentdb.next_collection_index_id TO 9200;
+SET documentdb.next_collection_id TO 9300;
+SET documentdb.next_collection_index_id TO 9300;
 -- Build three databases with different data volumes.
 SELECT documentdb_api.create_collection('test_1', 'coll');
 NOTICE:  creating collection
